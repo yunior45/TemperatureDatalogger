@@ -1,61 +1,59 @@
-import tkinter as tk
-from tkinter.ttk import *
+import glob
+import time
 import boto3
-import json
-import simplejson
-import decimal
+from boto3.dynamodb.conditions import Key
+from decimal import *
+from string import *
 
-class DecimalEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, decimal.Decimal):
-            if o % 1 > 0:
-                return float(o)
-            else:
-                return int(o)
-        return super(DecimalEncoder, self).default(o)
+randomId = 0
 
 client = boto3.resource(
     'dynamodb',
     aws_access_key_id='AWS access key',
-    aws_secret_access_key='AWS secret key',
+    aws_secret_access_key= 'AWS secret key',
     region_name='us-east-1'
 )
 
-temp = client.Table('DataSensing')
+tempTable = client.Table('DataSensing')
 
-def sensing():
+data = temp.scan(AttributesToGet=['id', 'ftemp'])
+lines = sorted(data['Items'], key=lambda k: k['id'], reverse=False)
 
-    data = temp.scan(AttributesToGet=['id', 'ftemp'],
-                     Select='SPECIFIC_ATTRIBUTES'
-                     )
-    lines = sorted(data['Items'], key=lambda k: k['id'], reverse=False)
+for i in lines:
+    randomId += 1
 
-    count = 0
-    for i in lines:
-        convertJSON = json.dumps(i, cls=DecimalEncoder)
-        temperature = simplejson.loads(convertJSON)['ftemp']
-        tempId = simplejson.loads(convertJSON)['id']
-        count+=1
+base_dir = '/sys/bus/w1/devices/'
+device_folder = glob.glob(base_dir + '28*')[0]
+device_file = device_folder + '/w1_slave'
 
-    TempLabel['text'] = float(temperature)
-    win.after(1000, sensing)
 
-win = tk.Tk()
-win.geometry("600x300+30+30")
-win.configure(background='gray')
-win.title("FGCU BioGas Temperature Sensing")
+def rawTemp():
+    f = open(device_file, 'r')
+    lines = f.readlines()
+    f.close()
+    return lines
 
-Title = Label(win,
-              font="arial 24 bold",
-              background='gray',
-              text="FGCU BioGas Temperature Sensing")
-Title.pack()
 
-TempLabel = Label(win,
-                  relief="ridge",
-                  font="fixedsys 64 bold",
-                  text='0.00')
-TempLabel.place(x=215, y=210, anchor='sw')
+def tempRead():
+    lines = rawTemp()
+    while lines[0].strip()[-3:] != 'YES':
+       time.sleep(0.2)
+       lines = rawTemp()
+    equals_pos = lines[1].find('t=')
+    if equals_pos != -1:
+        temp_string = lines[1][equals_pos+2:]
+        temp = (float(temp_string)/1000.0) * 9.0 / 5.0 + 32.0
+        return temp
 
-sensing()
-win.mainloop()
+
+while True:
+    ftemp = tempRead()
+
+    tempTable.put_item(
+        Item={
+              "ftemp": str(round(ftemp, 1)),
+	          "id": randomId
+        }
+    )
+    randomId += 1
+    time.sleep(5)
